@@ -1,6 +1,9 @@
 use std::env;
+use std::ffi::OsStr;
 use std::io;
 use std::fs;
+// use std::os::unix::fs::DirEntryExt2;
+// use swc_common::FileLoader;
 use swc_common::{
     self,
     errors::{ColorConfig, Handler},
@@ -11,17 +14,35 @@ use std::path::{
     Component, Path, PathBuf
 };
 use swc_ecma_ast::Module;
-use swc_ecma_parser::{lexer::Lexer, Capturing, Parser, StringInput, Syntax};
+use swc_ecma_parser::{lexer::Lexer, Capturing, Parser, StringInput, Syntax, TsConfig};
 
-fn extract_path_from_arg() -> io::Result<PathBuf> {
-    let args: Vec<String> = env::args().collect();
+struct ModuleDependency {
+    id: usize,
+    path: PathBuf,
+    dependencies: Vec<PathBuf>,
+}
+
+fn create_path_from_relative(relative: &String) -> io::Result<PathBuf> {
     let mut path = PathBuf::new();
     path.push(env::current_dir()?);
-    path.push(&args[1]);
+    path.push(relative);
     if !path.exists() {
-        return Err(io::Error::new(io::ErrorKind::NotFound, format!("Path {} not found.", &args[1])));
+        return Err(io::Error::new(io::ErrorKind::NotFound, format!("Path {} not found.", &relative)));
     }
     Ok(path)
+}
+
+fn extract_path_from_args() -> io::Result<(PathBuf, PathBuf)> {
+    let args: Vec<String> = env::args().collect();
+    println!("{:?}", args);
+    let (entrypoint, node_module_path) = (create_path_from_relative(&args[1]), create_path_from_relative(&args[2]));
+    if entrypoint.is_err() {
+        return Err(entrypoint.err().unwrap())
+    }
+    if node_module_path.is_err() {
+        return Err(node_module_path.err().unwrap())
+    }
+    return Ok((entrypoint.ok().unwrap(), node_module_path.ok().unwrap()))
 }
 
 fn parse_ecma_module(src_path: PathBuf) -> Module {
@@ -39,7 +60,7 @@ fn parse_ecma_module(src_path: PathBuf) -> Module {
 
     // Parse src into ES tokens
     let lexer = Lexer::new(
-        Syntax::Es(Default::default()),
+        Syntax::Typescript(TsConfig { tsx: true, decorators: false, dynamic_import: true, dts: true, no_early_errors: true, import_assertions: true }),
         Default::default(),
         StringInput::from(&*fm),
         None,
@@ -98,7 +119,7 @@ fn track_dependencies(module_path: PathBuf) -> (Vec<PathBuf>, Vec<String>) {
                 Err(err) => {
                     if err.kind() == io::ErrorKind::NotFound {
                         third_parties.push(module_name);
-                    }
+                    } 
                 }
             }
         }
@@ -109,20 +130,62 @@ fn track_dependencies(module_path: PathBuf) -> (Vec<PathBuf>, Vec<String>) {
     return (first_parties, third_parties);
 }
 
+fn build_dependency_graph(entrypoint: PathBuf) -> Vec<PathBuf> {
+    let mut dependency_queue: Vec<PathBuf> = Vec::new();
+    let valid_extensions = vec!["ts", "tsx"];
+    // let mut third_parties: Vec<String> = Vec::new();
+
+    dependency_queue.push(entrypoint);
+    while dependency_queue.len() > 0 {
+        let next = dependency_queue.pop().unwrap();
+        let extension = next.extension().unwrap_or(&OsStr::new("")).to_str().unwrap_or(&"");
+        if valid_extensions.contains(&extension) {
+            let (first_parties_it, _third_parties_it) = track_dependencies(next);
+            for deps in first_parties_it.iter() {
+                dependency_queue.push(deps.to_path_buf());
+            }
+        }
+    }
+    dependency_queue
+}
+
+fn is_npm_package(directory: &PathBuf) -> bool {
+    if !directory.is_dir() { 
+        return false;
+    }
+
+    for item in directory.read_dir().unwrap() {
+        let found_package = item
+            .map_err(|x| false)
+            .and_then(|entry| {
+                Ok(entry.file_name().to_str().unwrap() == "package.json")
+            })
+            .map_err(|x| false);
+
+        if found_package.unwrap_or(false) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn find_npm_packages(node_modules_path: PathBuf) -> Vec<PathBuf> {
+    let mut packages: Vec<PathBuf> = Vec::new();
+    for item in node_modules_path.clone().read_dir().unwrap() {
+        let entry = item.unwrap().path();
+        if is_npm_package(&entry) {
+            packages.push(entry)
+        }
+    }
+    return packages;
+}
+
 fn main() {
-    let entrypoint = match extract_path_from_arg() {
+    let (entrypoint, node_modules_path) = match extract_path_from_args() {
         Err(e) => { println!("error {}", e); std::process::exit(1) },
         Ok(v) => v,
     };
-    let mut dependency_queue: Vec<PathBuf> = Vec::new();
-    // let mut third_parties: Vec<String> = Vec::new();
-    dependency_queue.push(entrypoint);
-    while dependency_queue.len() > 0 {
-        let (first_parties_it, _third_parties_it) = track_dependencies(dependency_queue.pop().unwrap());
-        for deps in first_parties_it.iter() {
-            dependency_queue.push(deps.to_path_buf());
-        }
-        // dependency_queue.extend(first_parties_it.iter());
-        // third_parties.extend(third_parties_it.iter());
-    }
+    // build_dependency_graph(entrypoint);
+    let packages  = find_npm_packages(node_modules_path);
+    println!("{:?}", packages);
 }
