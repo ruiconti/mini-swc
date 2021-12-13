@@ -111,6 +111,7 @@ pub fn is_ecmascript_file(fpath: PathBuf) -> bool {
         .unwrap_or(&OsStr::new(""))
         .to_str()
         .unwrap_or(&"");
+    // TODO: Add all ES file extensions
     return vec!["js", "jsx"].contains(&extension);
 }
 
