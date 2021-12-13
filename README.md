@@ -6,8 +6,10 @@ This project has nothing to do with swc besides greatly relying on the amazing w
 
 ## Running
 
-```
-cargo run <path-to-entrypoint> <path-to-node_modules-dir>
+It is assumed that you do have Rust toolkit already set-up.
+
+```zsh
+cargo run $PATH_ENTRYPOINT $PATH_NODE_MODULES
 ```
 
 ## What does it do?
