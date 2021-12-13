@@ -14,7 +14,7 @@ cargo run $PATH_ENTRYPOINT $PATH_NODE_MODULES
 
 ## What does it do?
 
-- [x] Parse a ES and TS file
+- [x] Parse a ES and TS module
 - [x] Build AST (thanks to `swc`)
 - [x] Build a (loosely structured) dependency graph
 - [ ] Bundle in one script file
