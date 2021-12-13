@@ -1,6 +1,9 @@
 use std::env;
-use std::io::{Error, ErrorKind, Result};
 use std::path::{Component, Path, PathBuf};
+use std::{
+    ffi::OsStr,
+    io::{Error, ErrorKind, Result},
+};
 
 pub fn extract_path_from_args() -> Result<(PathBuf, PathBuf)> {
     let args: Vec<String> = env::args().collect();
@@ -31,42 +34,62 @@ pub fn create_path_from_relative(relative: &String) -> Result<PathBuf> {
     Ok(path)
 }
 
-pub fn absolute_path(current_dir: &PathBuf, relative: &String) -> Result<PathBuf> {
-    let mut module_path = PathBuf::new();
-    module_path.push(current_dir.parent().unwrap());
-    for component in Path::new(&relative).components() {
-        if component == Component::Normal(component.as_os_str()) {
-            // Ignore '.', '..' and win's root '\\'
-            module_path.push(component.as_os_str())
-        }
-    }
-    if !module_path.is_dir() && !module_path.is_file() {
-        module_path = module_path.with_extension("js");
-    }
-
-    match module_path.exists() {
-        true => Ok(module_path),
-        false => Err(Error::new(
-            ErrorKind::NotFound,
-            format!(
-                "Path could not be resolved: {:#?} {} {:#?}",
-                current_dir, relative, module_path
-            ),
-        )),
-    }
-}
-
-pub fn join_path(a: &PathBuf, b: &String) -> Result<PathBuf> {
+// TODO: Review docstring
+//
+// Useful path resolver
+//
+// If `root` is a directory, it is simple path joiner. It is aware of relative paths
+//
+// ```
+// let root = PathBuf::from("/tmp/proj/node_modules/@fluentui/src/");
+// let relative = "../../react/lib/index.js".to_string();
+// let path = resolve_relative(&root, relative);
+// assert_eq(path, PathBuf::from("/tmp/proj/node_modules/react/lib/index/js"))
+// ```
+//
+// If `root` is a file, it is a path joiner relative to root file.
+//
+// ```
+// let root = PathBuf::from("/tmp/proj/src/apps/auth/index.js");
+// let relative = "./jwt.js".to_string();
+// let path = resolve_relative(&root, relative);
+// assert_eq(path, PathBuf::from("/tmp/proj/src/apps/auth/jwt.js"))
+// ```
+//
+// There is an attempt to parse javascript files that ommit file extension.
+//
+// ```
+// let root = PathBuf::from("/tmp/proj/src/apps/auth/index.js");
+// let relative = "./jwt".to_string();
+// let path = resolve_relative(&root, relative);
+// assert_eq(path, PathBuf::from("/tmp/proj/src/apps/auth/jwt.js"))
+// ```
+pub fn resolve_relative(root: &PathBuf, relative: &String) -> Result<PathBuf> {
     let mut path = PathBuf::new();
-    path.push(a);
-    for component in Path::new(&b).components() {
-        if component == Component::Normal(component.as_os_str()) {
-            // Ignore '.', '..' and win's root '\\'
-            path.push(component.as_os_str())
+    path.push(if root.is_file() {
+        root.parent().unwrap()
+    } else {
+        root
+    });
+
+    for component in Path::new(&relative).components() {
+        match component {
+            Component::ParentDir => {
+                let mut components = path.components();
+                components.next_back();
+            }
+            Component::Normal(component) => {
+                path.push(component);
+            }
+            _ => {
+                // Purposefully ignore "." and "\\" components
+                ()
+            }
         }
     }
 
-    if !path.is_dir() && !path.is_file() && !path.exists() {
+    // Tries to fallback and parse it as a .js file
+    if !path.is_dir() && !path.is_file() {
         path = path.with_extension("js");
     }
 
@@ -74,7 +97,48 @@ pub fn join_path(a: &PathBuf, b: &String) -> Result<PathBuf> {
         true => Ok(path),
         false => Err(Error::new(
             ErrorKind::NotFound,
-            format!("Path could not be resolved: {:#?} {} {:#?}", a, b, path),
+            format!(
+                "Resolve relative failed because the path {:#?} does not exist.",
+                path
+            ),
         )),
     }
+}
+
+pub fn is_ecmascript_file(fpath: PathBuf) -> bool {
+    let extension = fpath
+        .extension()
+        .unwrap_or(&OsStr::new(""))
+        .to_str()
+        .unwrap_or(&"");
+    return vec!["js", "jsx"].contains(&extension);
+}
+
+fn is_npm_package(directory: &PathBuf) -> bool {
+    if !directory.is_dir() {
+        return false;
+    }
+
+    for item in directory.read_dir().unwrap() {
+        let found_package = item
+            .map_err(|x| false)
+            .and_then(|entry| Ok(entry.file_name().to_str().unwrap() == "package.json"))
+            .map_err(|x| false);
+
+        if found_package.unwrap_or(false) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn find_npm_packages(node_modules_path: PathBuf) -> Vec<PathBuf> {
+    let mut packages: Vec<PathBuf> = Vec::new();
+    for item in node_modules_path.clone().read_dir().unwrap() {
+        let entry = item.unwrap().path();
+        if is_npm_package(&entry) {
+            packages.push(entry)
+        }
+    }
+    return packages;
 }
